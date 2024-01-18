@@ -1,0 +1,8 @@
+
+namespace MNet
+{
+    class Message
+    {
+        
+    }
+}
