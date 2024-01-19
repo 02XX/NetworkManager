@@ -4,26 +4,40 @@ using System.Text;
 using Newtonsoft.Json;
 namespace MNet
 {
+    struct AsyncState
+    {
+        public byte[] head;
+        public byte[] body;
+        public int headCount;
+        public int bodyCount;
+        public int headLength;
+        public int bodyLength;
+        public Socket socket;
+    }
     internal class NetworkBase
     {
         #region 成员变量
+        protected Socket socket;
+        protected Logger logger;
         //消息列表
-        protected Dictionary<string, Action<Message>> messages;
+        protected Dictionary<string, Action<Socket, Message>> messages;
         #endregion //成员变量
         #region 成员函数
         protected NetworkBase()
         {
-            this.messages = new Dictionary<string, Action<Message>>();
+            logger = new Logger();
+            socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            this.messages = new Dictionary<string, Action<Socket, Message>>();
         }
         #region 组装拆解消息
         /// <summary>
-        /// 组装消息
+        /// 发送消息
         /// </summary>
+        /// <param name="socket">需要发送消息的socket</param>
         /// <param name="message">消息</param>
-        /// <returns>带长度信息的字节流</returns>
         /// <exception cref="MessageException"></exception>
         /// <exception cref="OutRangeExceptionException"></exception>
-        public byte[] Assemble(Message message)
+        public void SendMessage(Socket socket, Message message)
         {
             string? type = typeof(Message).FullName;
             if(type == null)
@@ -46,23 +60,23 @@ namespace MNet
                 byte[] total = new byte[body.Length + head.Length];
                 Array.Copy(head, 0, total, 0, head.Length);
                 Array.Copy(body, 0, total, head.Length, body.Length);
-                return total;
+                socket.Send(total);
             }
         }
         /// <summary>
-        /// 拆解消息
+        /// 接受消息
         /// </summary>
-        /// <param name="networkStream">网络流</param>
-        /// <returns>消息类型和消息</returns>
+        /// <param name="socket">需要接受消息的socket</param>
         /// <exception cref="MessageException"></exception>
-        public (string, Message) Disassemble(NetworkStream networkStream)
+        /// <exception cref="SocketException">socket掉线</exception>
+        public Package ReceiveMessage(Socket socket)
         {
             //获取头部信息
             int headCount = 0;
             byte[] head = new byte[sizeof(int)];
             while (headCount < sizeof(int))
             {
-                headCount += networkStream.Read(head, headCount, sizeof(int) - headCount);
+                headCount += socket.Receive(head, headCount, sizeof(int) - headCount, SocketFlags.None);
             }
             int bodyLength = BitConverter.ToInt32(head);
             //获取消息体
@@ -70,7 +84,7 @@ namespace MNet
             byte[] body = new byte[bodyLength];
             while(bodyCount < bodyLength)
             {
-                bodyCount += networkStream.Read(body, bodyCount, bodyLength - bodyCount);
+                bodyCount += socket.Receive(body, bodyCount, bodyLength - bodyCount, SocketFlags.None);
             }
             //反utf8编码
             string json = Encoding.UTF8.GetString(body);
@@ -80,8 +94,83 @@ namespace MNet
             {
                 throw new MessageException("反序列化失败");
             }
-            return (package.type, package.message);
+            if(messages.ContainsKey(package.type))
+            {
+                messages[package.type]?.Invoke(socket, package.message);
+            }
+            else
+            {
+                logger.Log(LogType.ERROR, "不能识别的消息类型"+package.type);
+            }
+            return package;
         }
+        /// <summary>
+        /// 非阻塞接受数据
+        /// </summary>
+        /// <param name="socket"></param>
+        public void ReceiveTask(Socket socket)
+        {
+            byte[] head = new byte[sizeof(int)];
+            socket.BeginReceive(head, 0, sizeof(int) - 0, SocketFlags.None,CallReceive, new AsyncState{head = head, headCount = 0, headLength = sizeof(int),body = [], bodyCount = 0,bodyLength = -1, socket = socket});
+        }
+        private void CallReceive(IAsyncResult asyncResult)
+        {
+            if(asyncResult.AsyncState == null)
+            {
+                throw new MessageException("回调为空");
+            }
+            AsyncState state = (AsyncState)asyncResult.AsyncState;
+            //判断是组装头部还是身体
+            if(state.bodyLength == -1)
+            {
+                //组装头部
+                state.headCount += state.socket.EndReceive(asyncResult);
+                if(state.headCount < state.headLength)
+                {
+                    //继续接受
+                    state.socket.BeginReceive(state.head, state.headCount, state.headLength, SocketFlags.None, CallReceive, new AsyncState { head = state.head, headCount = state.headCount, headLength = state.headLength, body = [], bodyCount = 0, bodyLength = -1, socket = state.socket});
+                }
+                else
+                {
+                    //头部接受完毕
+                    state.bodyLength = BitConverter.ToInt32(state.head);
+                    byte[] body = new byte[state.bodyLength];
+                    //开始接受身体
+                    state.socket.BeginReceive(body, 0, state.bodyLength, SocketFlags.None, CallReceive, new AsyncState {head=[], headCount = 0, headLength = -1, body = body, bodyCount = 0, bodyLength = state.bodyLength, socket = state.socket});
+                }
+            }
+            else
+            {
+                //组装身体
+                state.bodyCount += state.socket.EndReceive(asyncResult);
+                if(state.bodyCount < state.bodyLength)
+                {
+                    //继续组装
+                    state.socket.BeginReceive(state.body, state.bodyCount, state.bodyLength, SocketFlags.None, CallReceive, new AsyncState { head = state.head, headCount = state.headCount, headLength = state.headLength, body = state.body, bodyCount = state.bodyCount, bodyLength = state.bodyLength, socket = state.socket });
+                }
+                else
+                {
+                    //接受完毕
+                    //反utf8编码
+                    string json = Encoding.UTF8.GetString(state.body);
+                    //反序列化
+                    Package? package = JsonConvert.DeserializeObject<Package>(json);
+                    if (package == null)
+                    {
+                        throw new MessageException("反序列化失败");
+                    }
+                    if (messages.ContainsKey(package.type))
+                    {
+                        messages[package.type]?.Invoke(socket, package.message);
+                    }
+                    else
+                    {
+                        logger.Log(LogType.ERROR, "不能识别的消息类型" + package.type);
+                    }
+                }
+            }
+        }
+        
         #endregion //组装拆解消息
         #region 消息处理
         /// <summary>
@@ -90,7 +179,7 @@ namespace MNet
         /// <typeparam name="T">消息类型</typeparam>
         /// <param name="action">回调函数</param>
         /// <exception cref="MessageException">消息类型异常</exception>
-        public void Register<T>(Action<Message> action) where T:Message
+        public void Register<T>(Action<Socket, Message> action) where T:Message
         {
             string? key = typeof(T).FullName;
             if(key != null)
@@ -125,7 +214,7 @@ namespace MNet
         /// <typeparam name="T">消息类型</typeparam>
         /// <param name="action">回调函数</param>
         /// <exception cref="MessageException">消息类型异常</exception>
-        public void ChangeMessage<T>(Action<Message> action) where T : Message
+        public void ChangeMessage<T>(Action<Socket, Message> action) where T : Message
         {
             string? key = typeof(T).FullName;
             if (key != null)
