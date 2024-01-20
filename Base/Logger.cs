@@ -1,12 +1,12 @@
 namespace MNet
-{   
-    internal enum LogType
+{
+    public enum LogType
     {
         INFO,//提示
         ERROR,//错误
         WARNING,//警告
     }
-    internal class Logger
+    public class Logger
     {
         private string filePath;
 
@@ -38,9 +38,9 @@ namespace MNet
         {
             Log(LogType.INFO, $"{ip}:{port}加入");
         }
-        public void Leave(string ip, int port)
+        public void Leave(string ip, int port, string message="")
         {
-            Log(LogType.INFO, $"{ip}:{port}离开");
+            Log(LogType.INFO, $"{ip}:{port}离开,{message}");
         }
         public void Flash()
         {

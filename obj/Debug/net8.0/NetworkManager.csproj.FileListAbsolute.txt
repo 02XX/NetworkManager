@@ -1,0 +1,13 @@
+E:\Code\NetworkManager\bin\Debug\net8.0\NetworkManager.deps.json
+E:\Code\NetworkManager\bin\Debug\net8.0\NetworkManager.dll
+E:\Code\NetworkManager\bin\Debug\net8.0\NetworkManager.pdb
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.csproj.AssemblyReference.cache
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.GeneratedMSBuildEditorConfig.editorconfig
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.AssemblyInfoInputs.cache
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.AssemblyInfo.cs
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.csproj.CoreCompileInputs.cache
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.sourcelink.json
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.dll
+E:\Code\NetworkManager\obj\Debug\net8.0\refint\NetworkManager.dll
+E:\Code\NetworkManager\obj\Debug\net8.0\NetworkManager.pdb
+E:\Code\NetworkManager\obj\Debug\net8.0\ref\NetworkManager.dll

@@ -4,23 +4,28 @@ using Newtonsoft.Json;
 
 namespace MNet
 {
-    class Server : NetworkBase
+    public class Server : NetworkBase
     {
         private const string ip = "0.0.0.0";
-        private int port = 12345;
-        private MessageHandler messageHandler;
+        private int port;
         private Dictionary<Socket, SocketClient> socketClients;
-        public Server(int port, MessageHandler messageHandler)
+        public ServerMessageHandler serverMessageHandler;
+        public bool IsStarted {get; set;}
+        public Server(int port = 12345)
         {
             this.port = port;
-            this.messageHandler = messageHandler;
             this.socketClients = new Dictionary<Socket, SocketClient>();
+            serverMessageHandler = new ServerMessageHandler(this);
         }
+        /// <summary>
+        /// 开启服务器
+        /// </summary>
         public void Start()
         {
             socket.Bind(new IPEndPoint(IPAddress.Parse(ip), port));
             socket.Listen(10);
-            logger.Log(LogType.INFO, $"服务器开始监听，{ip}:{port}");
+            logger.Log(LogType.INFO, $"服务器开始监听,{ip}:{port}");
+            IsStarted = true;
             List<Socket> checkRead = new List<Socket>();
             //多路复用
             while(true)
@@ -60,25 +65,63 @@ namespace MNet
                         try
                         {
                             Package package = ReceiveMessage(socket);
-                            logger.Receive(socketClient.IP, socketClient.Port, JsonConvert.SerializeObject(package.message));
                         }
-                        catch(SocketException)
+                        catch(SocketException e)
                         {
                             //掉线
+                            logger.Leave(socketClient.IP, socketClient.Port, e.Message);
                             socketClients.Remove(socket);
-                            logger.Leave(socketClient.IP, socketClient.Port);
                         }
                     }
                 }
             }
         }
+        /// <summary>
+        /// 给某个socket发送消息
+        /// </summary>
+        /// <param name="socket"></param>
+        /// <param name="message"></param>
+        public void Send(Socket socket, Message message)
+        {
+            if(!socketClients.ContainsKey(socket))
+            {
+                logger.Log(LogType.ERROR, "客户端未连接");
+                return;
+            }
+            SocketClient socketClient = socketClients[socket];
+            try
+            {
+                SendMessage(socket, message);
+            }
+            catch(SocketException e)
+            {
+                //掉线
+                logger.Leave(socketClient.IP, socketClient.Port, e.Message);
+                socketClients.Remove(socket);
+            }
+        }
+        /// <summary>
+        /// 将消息广播给所有客户端
+        /// </summary>
+        /// <param name="message"></param>
+        public void SendAll(Message message)
+        {
+            foreach(KeyValuePair<Socket, SocketClient> item in socketClients)
+            {
+                Send(item.Key, message);
+            }
+        }
+        /// <summary>
+        /// 停止服务器
+        /// </summary>
         public void Stop()
         {
-            socket.Close();
-        }
-        public void InitialMessage()
-        {
-
+            if(IsStarted)
+            {
+                socket.Close();
+                IsStarted = false;
+                logger.Log(LogType.INFO, "服务器停止");
+            }
         }
 
     }

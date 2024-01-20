@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json;
@@ -14,11 +15,13 @@ namespace MNet
         public int bodyLength;
         public Socket socket;
     }
-    internal class NetworkBase
+    public class NetworkBase
     {
         #region 成员变量
         protected Socket socket;
-        protected Logger logger;
+        public Logger logger;
+        private JsonSerializerSettings setting;
+        public MessageHandler MessageHandler { get; set; }
         //消息列表
         protected Dictionary<string, Action<Socket, Message>> messages;
         #endregion //成员变量
@@ -26,8 +29,11 @@ namespace MNet
         protected NetworkBase()
         {
             logger = new Logger();
+            setting = new JsonSerializerSettings();
+            setting.Converters.Add(new MessageConverter());
             socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             this.messages = new Dictionary<string, Action<Socket, Message>>();
+            this.MessageHandler = new MessageHandler(this);
         }
         #region 组装拆解消息
         /// <summary>
@@ -37,22 +43,26 @@ namespace MNet
         /// <param name="message">消息</param>
         /// <exception cref="MessageException"></exception>
         /// <exception cref="OutRangeExceptionException"></exception>
-        public void SendMessage(Socket socket, Message message)
+        /// /// <exception cref="SocketException"></exception>
+        protected void SendMessage(Socket socket, Message message)
         {
-            string? type = typeof(Message).FullName;
+            IPEndPoint? iPEndPoint = socket.RemoteEndPoint as IPEndPoint;
+            string ip = iPEndPoint?.Address.ToString() ?? "UnknownIP";
+            int port = iPEndPoint?.Port ?? -1;
+            string? type = message.GetType().FullName;
             if(type == null)
             {
                 throw new MessageException("没有这个消息类型");
             }
             Package package = new Package(type, message);
             //序列化为字符串
-            string json = JsonConvert.SerializeObject(package);
+            string json = JsonConvert.SerializeObject(package, setting);
             //utf8编码
             byte[] body = Encoding.UTF8.GetBytes(json);
             //头部4个字节int32，消息最长为2,147,483,647
-            if (body.Length > int.MinValue)
+            if (body.Length > int.MaxValue)
             {
-                throw new OutRangeExceptionException("消息体长度应小于" + (int.MaxValue - sizeof(int)));
+                throw new OutRangeExceptionException("消息体长度应小于" + (int.MaxValue - sizeof(int))+"当前长度"+ body.Length);
             }
             else
             {
@@ -60,6 +70,7 @@ namespace MNet
                 byte[] total = new byte[body.Length + head.Length];
                 Array.Copy(head, 0, total, 0, head.Length);
                 Array.Copy(body, 0, total, head.Length, body.Length);
+                logger.Send(ip, port, json);
                 socket.Send(total);
             }
         }
@@ -69,8 +80,11 @@ namespace MNet
         /// <param name="socket">需要接受消息的socket</param>
         /// <exception cref="MessageException"></exception>
         /// <exception cref="SocketException">socket掉线</exception>
-        public Package ReceiveMessage(Socket socket)
+        protected Package ReceiveMessage(Socket socket)
         {
+            IPEndPoint? iPEndPoint = socket.RemoteEndPoint as IPEndPoint;
+            string ip = iPEndPoint?.Address.ToString() ?? "UnknownIP";
+            int port = iPEndPoint?.Port ?? -1;
             //获取头部信息
             int headCount = 0;
             byte[] head = new byte[sizeof(int)];
@@ -89,18 +103,19 @@ namespace MNet
             //反utf8编码
             string json = Encoding.UTF8.GetString(body);
             //反序列化
-            Package? package = JsonConvert.DeserializeObject<Package>(json);
+            Package? package = JsonConvert.DeserializeObject<Package>(json, setting);
             if(package == null)
             {
                 throw new MessageException("反序列化失败");
             }
             if(messages.ContainsKey(package.type))
             {
+                logger.Receive(ip, port, json);
                 messages[package.type]?.Invoke(socket, package.message);
             }
             else
             {
-                logger.Log(LogType.ERROR, "不能识别的消息类型"+package.type);
+                logger.Log(LogType.ERROR, "不能识别的消息类型"+ package.type);
             }
             return package;
         }
@@ -108,7 +123,7 @@ namespace MNet
         /// 非阻塞接受数据
         /// </summary>
         /// <param name="socket"></param>
-        public void ReceiveTask(Socket socket)
+        protected void ReceiveTask(Socket socket)
         {
             byte[] head = new byte[sizeof(int)];
             socket.BeginReceive(head, 0, sizeof(int) - 0, SocketFlags.None,CallReceive, new AsyncState{head = head, headCount = 0, headLength = sizeof(int),body = [], bodyCount = 0,bodyLength = -1, socket = socket});
@@ -179,12 +194,20 @@ namespace MNet
         /// <typeparam name="T">消息类型</typeparam>
         /// <param name="action">回调函数</param>
         /// <exception cref="MessageException">消息类型异常</exception>
-        public void Register<T>(Action<Socket, Message> action) where T:Message
+        public void RegisterMessage<T>(Action<Socket, Message> action) where T:Message
         {
             string? key = typeof(T).FullName;
             if(key != null)
             {
-                messages.Add(key, action);
+                if(!messages.ContainsKey(key))
+                {
+                    messages.Add(key, action);
+                    logger.Log(LogType.INFO, "注册消息类型" + key);
+                }
+                else
+                {
+                    logger.Log(LogType.INFO, key+"注册失败,消息类型已经注册"+messages[key].GetType().FullName);
+                }
             }
             else
             {
@@ -201,7 +224,15 @@ namespace MNet
             string? key = typeof(T).FullName;
             if (key != null)
             {
-                messages.Remove(key);
+                if(messages.ContainsKey(key))
+                {
+                    messages.Remove(key);
+                    logger.Log(LogType.INFO, "删除消息类型" + key);
+                }
+                else
+                {
+                    logger.Log(LogType.INFO, "删除失败,"+key+"未被注册");
+                }
             }
             else
             {
@@ -219,7 +250,15 @@ namespace MNet
             string? key = typeof(T).FullName;
             if (key != null)
             {
-                messages[key] = action;
+                if (messages.ContainsKey(key))
+                {
+                    messages[key] = action;
+                    logger.Log(LogType.INFO, "修改消息类型" + key);
+                }
+                else
+                {
+                    logger.Log(LogType.INFO, "修改失败," + key + "未被注册");
+                }
             }
             else
             {
